@@ -200,55 +200,65 @@ public:
         return end();
     }
 
+    void UninitializedMoveOrCopy(iterator begin, iterator end, iterator dest){
+        if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
+            std::uninitialized_move(begin, end, dest);
+        } else {
+            std::uninitialized_copy(begin, end, dest);
+        }
+    }
+
+    template <typename... Args>
+    iterator EmplaceRealloc(const_iterator pos, Args&&... args) {
+        size_t new_capacity = size_ == 0 ? 1 : size_ * 2;
+        RawMemory<T> new_data(new_capacity);
+
+        auto position = const_cast<T*>(pos);
+        auto new_begin = new_data.GetAddress();
+        auto new_position = new_data + (pos - cbegin());
+
+        int step = 0;
+        try {
+            new (new_position) T(std::forward<Args>(args)...);
+            ++step; // 1
+            UninitializedMoveOrCopy(begin(), position, new_begin);
+            ++step; // 2
+            UninitializedMoveOrCopy(position, end(), new_position + 1);
+            std::destroy_n(begin(), size_);
+            data_.Swap(new_data);
+        }  catch (...) {
+            if(step == 1) {
+                std::destroy_n(new_position, 1);
+            } else
+            if(step == 2) {
+                std::destroy(new_begin, new_position + 1);
+            }
+            throw;
+        }
+
+        ++size_;
+        return new_position;
+    }
+
     template <typename... Args>
     iterator Emplace(const_iterator pos, Args&&... args) {
-        const size_t indx = pos - cbegin();
-        const auto position = begin() + indx;
+        auto position = const_cast<T*>(pos);
 
-        if (size_ == Capacity()) {
-            size_t new_capacity = size_ == 0 ? 1 : size_ * 2;
-            RawMemory<T> new_data(new_capacity);
+        if (size_ == Capacity())
+            return EmplaceRealloc(pos, std::forward<Args>(args)...);
 
-            int step = 0;
-            try {
-                new (new_data + indx) T(std::forward<Args>(args)...);
-                ++step;
-                if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-                    std::uninitialized_move(begin(), position, new_data.GetAddress());
-                    ++step;
-                    std::uninitialized_move(position, end(), new_data + indx + 1);
-                } else {
-                    std::uninitialized_copy(begin(), position, new_data.GetAddress());
-                    step += 2;
-                    std::uninitialized_copy(position, end(), new_data + indx + 1);
-                }
-
-                std::destroy_n(begin(), size_);
-                data_.Swap(new_data);
-
-            }  catch (...) {
-                if(step == 1) {
-                    new_data[indx].~T();
-                } else
-                if(step > 1) {
-                    std::destroy_n(new_data.GetAddress(), indx + 1);
-                }
-                throw;
-            }
-
-        } else
-        if(pos == cend()) {
-
-            new (end()) T(std::forward<Args>(args)...);
-
-        } else {
-            T tmp(std::forward<Args>(args)...);
-            std::uninitialized_move_n(end() - 1, 1, end());
-            std::move_backward(position, end() - 1, end());
-            data_[indx] = std::move(tmp);
+        if(position == end()) {
+            new (position) T(std::forward<Args>(args)...);
+            ++size_;
+            return position;
         }
+
+        T tmp(std::forward<Args>(args)...);
+        std::uninitialized_move_n(end() - 1, 1, end());
+        std::move_backward(position, end() - 1, end());
+        *position = std::move(tmp);
         ++size_;
-        return begin() + indx;
+        return position;
     }
 
     iterator Insert(const_iterator pos, T&& value) {
@@ -273,16 +283,16 @@ public:
     }
 
     void PopBack() noexcept {
+        assert(size_ > 0);
         std::destroy_n(end() - 1, 1);
         --size_;
     }
 
     iterator Erase(const_iterator pos) {
-        size_t indx = pos - begin();
-        std::move(begin() + indx + 1, end(), begin() + indx);
-        std::destroy_n(end() - 1, 1);
-        --size_;
-        return begin() + indx;
+        auto position = const_cast<T*>(pos);
+        std::move(position + 1, end(), position);
+        PopBack();
+        return position;
     }
 
     size_t Size() const noexcept {
