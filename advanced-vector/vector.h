@@ -200,46 +200,6 @@ public:
         return end();
     }
 
-    void UninitializedMoveOrCopy(iterator begin, iterator end, iterator dest){
-        if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-            std::uninitialized_move(begin, end, dest);
-        } else {
-            std::uninitialized_copy(begin, end, dest);
-        }
-    }
-
-    template <typename... Args>
-    iterator EmplaceRealloc(const_iterator pos, Args&&... args) {
-        size_t new_capacity = size_ == 0 ? 1 : size_ * 2;
-        RawMemory<T> new_data(new_capacity);
-
-        auto position = const_cast<T*>(pos);
-        auto new_begin = new_data.GetAddress();
-        auto new_position = new_data + (pos - cbegin());
-
-        int step = 0;
-        try {
-            new (new_position) T(std::forward<Args>(args)...);
-            ++step; // 1
-            UninitializedMoveOrCopy(begin(), position, new_begin);
-            ++step; // 2
-            UninitializedMoveOrCopy(position, end(), new_position + 1);
-            std::destroy_n(begin(), size_);
-            data_.Swap(new_data);
-        }  catch (...) {
-            if(step == 1) {
-                std::destroy_n(new_position, 1);
-            } else
-            if(step == 2) {
-                std::destroy(new_begin, new_position + 1);
-            }
-            throw;
-        }
-
-        ++size_;
-        return new_position;
-    }
-
     template <typename... Args>
     iterator Emplace(const_iterator pos, Args&&... args) {
         auto position = const_cast<T*>(pos);
@@ -322,6 +282,46 @@ public:
     }
 
 private:
+    void UninitializedMoveOrCopy(iterator begin, iterator end, iterator dest){
+        if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
+            std::uninitialized_move(begin, end, dest);
+        } else {
+            std::uninitialized_copy(begin, end, dest);
+        }
+    }
+
+    template <typename... Args>
+    iterator EmplaceRealloc(const_iterator pos, Args&&... args) {
+        size_t new_capacity = size_ == 0 ? 1 : size_ * 2;
+        RawMemory<T> new_data(new_capacity);
+
+        auto position = const_cast<T*>(pos);
+        auto new_begin = new_data.GetAddress();
+        auto new_position = new_data + (pos - cbegin());
+
+        int step = 0;
+        try {
+            new (new_position) T(std::forward<Args>(args)...);
+            ++step; // 1
+            UninitializedMoveOrCopy(begin(), position, new_begin);
+            ++step; // 2
+            UninitializedMoveOrCopy(position, end(), new_position + 1);
+            std::destroy_n(begin(), size_);
+            data_.Swap(new_data);
+        }  catch (...) {
+            if(step == 1) {
+                std::destroy_n(new_position, 1);
+            } else
+            if(step == 2) {
+                std::destroy(new_begin, new_position + 1);
+            }
+            throw;
+        }
+
+        ++size_;
+        return new_position;
+    }
+
     RawMemory<T> data_;
     size_t size_ = 0;
 };
